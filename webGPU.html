@@ -27,6 +27,44 @@
         format: canvasFormat,
       });
 
+      const cellShaderModule = device.createShaderModule({
+        label: "Cell shader",
+        code: `
+          // Your shader code will go here
+          in pos
+        `
+      });
+
+      const vertices = new Float32Array([
+      //   X,    Y,
+        -0.8, -0.8, // Triangle 1 (Blue)
+        0.8, -0.8,
+        0.8,  0.8,
+
+        -0.8, -0.8, // Triangle 2 (Red)
+        0.8,  0.8,
+        -0.8,  0.8,
+      ]);
+
+      const vertexBuffer = device.createBuffer({
+        label: "Cell vertices",
+        size: vertices.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+
+      const vertexBufferLayout = {
+        arrayStride: 8,
+        attributes: [{
+          format: "float32x2",
+          offset: 0,
+          shaderLocation: 0, // Position, see vertex shader
+        }],
+      };
+
+      device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
+
+
+
       const encoder = device.createCommandEncoder();
       const renderPass = encoder.beginRenderPass({
         colorAttachments: [{
