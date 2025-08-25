@@ -1,3 +1,4 @@
+const GRID_SIZE = 32;
 
 async function initWebGPU(canvas)
 {
@@ -26,19 +27,42 @@ async function initWebGPU(canvas)
 function createRenderPipeline(device, canvasFormat, vertexBufferLayout)
 {
     const cellShaderModule = device.createShaderModule({
-        label: "Cell shader",
+        label: "cell_shader",
         code: 
         `
-            @vertex
-            fn vertexMain(@location(0) pos : vec2f) -> @builtin(position) vec4f 
+            struct VertexInput
             {
-                return vec4f(pos.x, pos.y, 0, 1);
+                @location(0) pos : vec2f,
+                @builtin(instance_index) instance: u32,
+            };
+
+            struct VertexOutput
+            {
+                @builtin(position) pos: vec4f,
+                @location(0) cell: vec2f,
+            };
+
+            @group(0) @binding(0) var<uniform> grid: vec2f;
+
+            @vertex
+            fn vertexMain(input: VertexInput) -> VertexOutput
+            {
+                let i = f32(input.instance);
+                let cell = vec2f(i % grid.x, floor(i / grid.y));
+                let cellOffset = cell / grid * 2;
+                let gridPos = (input.pos + 1) / grid - 1 + cellOffset;
+
+                var output: VertexOutput;
+                output.pos = vec4f(gridPos, 0, 1);
+                output.cell = cell;
+                return output;
             }
 
             @fragment
-            fn fragmentMain() -> @location(0) vec4f
+            fn fragmentMain(input: VertexOutput) -> @location(0) vec4f
             {
-                return vec4f(1, 0, 0, 1);
+                let c = input.cell / grid;
+                return vec4f(c, 1-c.x, 1);
             }
         `
     });
@@ -98,9 +122,36 @@ function createVertexBuffer(device)
         }],
     };
 
-    device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
+    device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/ 0, vertices);
 
     return {vertexBuffer, vertexBufferLayout, vertexLength: vertices.length / 2};
+}
+
+function createUniformBuffer(device, cellPipeline)
+{
+    const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
+
+    const uniformBuffer = device.createBuffer
+    ({
+        label: "grid_uniform",
+        size: uniformArray.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    device.queue.writeBuffer(uniformBuffer, /*bufferOffset=*/ 0, uniformArray);
+
+    const bindGroup = device.createBindGroup
+    ({
+        label: "cell_renderer_bind_group",
+        layout: cellPipeline.getBindGroupLayout(0),
+        entries: 
+        [{
+            binding: 0,
+            resource: {buffer: uniformBuffer}
+        }]
+    });
+
+    return bindGroup;
 }
 
 async function main()
@@ -112,6 +163,8 @@ async function main()
     const { vertexBuffer, vertexBufferLayout, vertexLength } = createVertexBuffer(device);
 
     const cellPipeline = createRenderPipeline(device, canvasFormat, vertexBufferLayout);
+
+    const bindGroup = createUniformBuffer(device, cellPipeline);
 
     const encoder = device.createCommandEncoder();
 
@@ -125,10 +178,13 @@ async function main()
     });
 
     renderPass.setPipeline(cellPipeline);
+
     renderPass.setVertexBuffer(0, vertexBuffer);
-    renderPass.draw(vertexLength);
+    renderPass.setBindGroup(0, bindGroup);
+    renderPass.draw(vertexLength, /*number of instances = */ GRID_SIZE * GRID_SIZE);
 
     renderPass.end();
+
     device.queue.submit([encoder.finish()]);
 }
 
