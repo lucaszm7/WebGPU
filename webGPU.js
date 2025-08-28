@@ -1,6 +1,30 @@
-const GRID_SIZE = 512;
-const UPDATE_INTERVAL = 16;
+let GRID_SIZE_X = 0;
+let GRID_SIZE_Y = 0;
+
+const UPDATE_INTERVAL = 50;
 const WORKGROUP_SIZE = 8;
+const PROPORTION = 8;
+
+function configureCanvas(canvas, device, context) {
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    const presentationSize = [
+        canvas.clientWidth * devicePixelRatio,
+        canvas.clientHeight * devicePixelRatio
+    ];
+
+    canvas.width = presentationSize[0];
+    canvas.height = presentationSize[1];
+
+    GRID_SIZE_X = canvas.width / PROPORTION;
+    GRID_SIZE_Y = canvas.height / PROPORTION;
+
+    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+    context.configure({
+        device: device,
+        format: canvasFormat,
+        size: presentationSize
+    });
+}
 
 async function initWebGPU(canvas)
 {
@@ -18,10 +42,7 @@ async function initWebGPU(canvas)
     const context = canvas.getContext("webgpu");
     const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
 
-    context.configure({
-        device: device,
-        format: canvasFormat,
-    });
+    configureCanvas(canvas, device, context);
 
     return {device, context, canvasFormat};
 }
@@ -87,14 +108,12 @@ function createVertexFragmentShader(device)
         label: "cell_shader",
         code: 
         `
-            struct VertexInput
-            {
+            struct VertexInput {
                 @location(0) pos : vec2f,
                 @builtin(instance_index) instance: u32,
             };
 
-            struct VertexOutput
-            {
+            struct VertexOutput {
                 @builtin(position) pos: vec4f,
                 @location(0) cell: vec2f,
             };
@@ -103,25 +122,36 @@ function createVertexFragmentShader(device)
             @group(0) @binding(1) var<storage> cellState: array<u32>;
 
             @vertex
-            fn vertexMain(input: VertexInput) -> VertexOutput
+            fn vertexMain(input: VertexInput) -> VertexOutput 
             {
                 let state = f32(cellState[input.instance]);
                 let i = f32(input.instance);
-                let cell = vec2f(i % gridSize.x, floor(i / gridSize.y));
-                let cellOffset = cell / gridSize * 2;
-                let gridPos = (input.pos * state + 1) / gridSize - 1 + cellOffset;
+                
+                let cell = vec2f(i % gridSize.x, floor(i / gridSize.x));
+
+                // 1. Calculate the size of one cell in the -1 to +1 space.
+                let cell_size = 2.0 / gridSize;
+                
+                // 2. Calculate the top-left corner of the cell in the -1 to +1 space.
+                let cell_corner = cell * cell_size - 1.0;
+
+                // 3. Calculate the final position of the vertex inside that cell.
+                // We flip the Y coordinate to match screen space.
+                let final_pos = cell_corner + vec2f(
+                    (input.pos.x * state + 1.0) * cell_size.x / 2.0,
+                    (input.pos.y * state - 1.0) * cell_size.y / -2.0
+                );
 
                 var output: VertexOutput;
-                output.pos = vec4f(gridPos, 0, 1);
+                output.pos = vec4f(final_pos, 0.0, 1.0);
                 output.cell = cell;
                 return output;
             }
 
             @fragment
-            fn fragmentMain(input: VertexOutput) -> @location(0) vec4f
-            {
+            fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
                 let c = input.cell / gridSize;
-                return vec4f(c, 1-c.x, 1);
+                return vec4f(c, 1.0 - c.x, 1.0);
             }
         `
     });
@@ -212,7 +242,7 @@ function createVertexBuffer(device)
 
 function createUniformBuffer(device)
 {
-    const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]);
+    const uniformArray = new Float32Array([GRID_SIZE_X, GRID_SIZE_Y]);
 
     const uniformBuffer = device.createBuffer
     ({
@@ -228,7 +258,7 @@ function createUniformBuffer(device)
 
 function createStorageBuffer(device)
 {
-    const cellStateArray = new Uint32Array(GRID_SIZE * GRID_SIZE);
+    const cellStateArray = new Uint32Array(GRID_SIZE_X * GRID_SIZE_Y);
 
     const cellStateStorage = 
     [
@@ -246,16 +276,16 @@ function createStorageBuffer(device)
         })
     ];
 
-    for (let i = 0; i < cellStateArray.length; i += 3) 
+    for (let i = 0; i < cellStateArray.length; i++) 
     {
-        cellStateArray[i] = Math.random() > 0.6 ? 1 : 0;
+        cellStateArray[i] = Math.random() > 0.5 ? 1 : 0;
     }
 
     device.queue.writeBuffer(cellStateStorage[0], 0, cellStateArray);
 
     for (let i = 0; i < cellStateArray.length; i++) 
     {
-        cellStateArray[i] = i % 2;
+        cellStateArray[i] = 0;
     }
 
     device.queue.writeBuffer(cellStateStorage[1], 0, cellStateArray);
@@ -361,8 +391,9 @@ function updateGrid(context, device, pipelines, vertexBuffer, bindGroups, vertex
     computePass.setPipeline(pipelines[1]);
     computePass.setBindGroup(0, bindGroups[STEP % 2]);
 
-    const workGroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
-    computePass.dispatchWorkgroups(workGroupCount, workGroupCount);
+    const workGroupCountX = Math.ceil(GRID_SIZE_X / WORKGROUP_SIZE);
+    const workGroupCountY = Math.ceil(GRID_SIZE_Y / WORKGROUP_SIZE);
+    computePass.dispatchWorkgroups(workGroupCountX, workGroupCountY);
 
     computePass.end();
 
@@ -381,7 +412,7 @@ function updateGrid(context, device, pipelines, vertexBuffer, bindGroups, vertex
 
     renderPass.setVertexBuffer(0, vertexBuffer);
     renderPass.setBindGroup(0, bindGroups[STEP % 2]);
-    renderPass.draw(vertexLength, /*number of instances = */ GRID_SIZE * GRID_SIZE);
+    renderPass.draw(vertexLength, /*number of instances = */ GRID_SIZE_Y * GRID_SIZE_X);
 
     renderPass.end();
 
